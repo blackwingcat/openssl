@@ -117,7 +117,6 @@ int dgst_main(int argc, char **argv)
     if (md != NULL)
         digestname = argv[0];
 
-    opt_set_unknown_name("digest");
     prog = opt_init(argc, argv, dgst_options);
     while ((o = opt_next()) != OPT_EOF) {
         switch (o) {
@@ -488,11 +487,8 @@ static void show_digests(const OBJ_NAME *name, void *arg)
 
     /* Filter out message digests that we cannot use */
     md = EVP_MD_fetch(app_get0_libctx(), name->name, app_get0_propq());
-    if (md == NULL) {
-        md = EVP_get_digestbyname(name->name);
-        if (md == NULL)
-            return;
-    }
+    if (md == NULL)
+        return;
 
     BIO_printf(dec->bio, "-%-25s", name->name);
     if (++dec->n == 3) {
@@ -526,7 +522,7 @@ static const char *newline_escape_filename(const char *file, int * backslash)
     file_cpy = app_malloc(mem_len, file);
     i = 0;
 
-    while (e < length) {
+    while(e < length) {
         const char c = file[e];
         if (c == '\n') {
             file_cpy[i++] = '\\';

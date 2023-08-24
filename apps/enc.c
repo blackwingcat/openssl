@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2022 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2021 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -29,10 +29,6 @@
 #undef BSIZE
 #define SIZE    (512)
 #define BSIZE   (8*1024)
-
-#define PBKDF2_ITER_DEFAULT     10000
-#define STR(a) XSTR(a)
-#define XSTR(a) #a
 
 static int set_hex(const char *in, unsigned char *out, int size);
 static void show_ciphers(const OBJ_NAME *name, void *bio_);
@@ -92,15 +88,10 @@ const OPTIONS enc_options[] = {
     {"S", OPT_UPPER_S, 's', "Salt, in hex"},
     {"iv", OPT_IV, 's', "IV in hex"},
     {"md", OPT_MD, 's', "Use specified digest to create a key from the passphrase"},
-    {"iter", OPT_ITER, 'p',
-     "Specify the iteration count and force the use of PBKDF2"},
-    {OPT_MORE_STR, 0, 0, "Default: " STR(PBKDF2_ITER_DEFAULT)},
-    {"pbkdf2", OPT_PBKDF2, '-',
-     "Use password-based key derivation function 2 (PBKDF2)"},
-    {OPT_MORE_STR, 0, 0,
-     "Use -iter to change the iteration count from " STR(PBKDF2_ITER_DEFAULT)},
+    {"iter", OPT_ITER, 'p', "Specify the iteration count and force use of PBKDF2"},
+    {"pbkdf2", OPT_PBKDF2, '-', "Use password-based key derivation function 2"},
     {"none", OPT_NONE, '-', "Don't encrypt"},
-#ifndef OPENSSL_NO_ZLIB
+#ifdef ZLIB
     {"z", OPT_Z, '-', "Compress or decompress encrypted data using zlib"},
 #endif
     {"", OPT_CIPHER, '-', "Any supported cipher"},
@@ -136,37 +127,22 @@ int enc_main(int argc, char **argv)
     int pbkdf2 = 0;
     int iter = 0;
     long n;
-    int streamable = 1;
-    int wrap = 0;
     struct doall_enc_ciphers dec;
-#ifndef OPENSSL_NO_ZLIB
+#ifdef ZLIB
     int do_zlib = 0;
     BIO *bzl = NULL;
 #endif
-    int do_brotli = 0;
-    BIO *bbrot = NULL;
-    int do_zstd = 0;
-    BIO *bzstd = NULL;
 
     /* first check the command name */
     if (strcmp(argv[0], "base64") == 0)
         base64 = 1;
-#ifndef OPENSSL_NO_ZLIB
+#ifdef ZLIB
     else if (strcmp(argv[0], "zlib") == 0)
         do_zlib = 1;
-#endif
-#ifndef OPENSSL_NO_BROTLI
-    else if (strcmp(argv[0], "brotli") == 0)
-        do_brotli = 1;
-#endif
-#ifndef OPENSSL_NO_ZSTD
-    else if (strcmp(argv[0], "zstd") == 0)
-        do_zstd = 1;
 #endif
     else if (strcmp(argv[0], "enc") != 0)
         ciphername = argv[0];
 
-    opt_set_unknown_name("cipher");
     prog = opt_init(argc, argv, enc_options);
     while ((o = opt_next()) != OPT_EOF) {
         switch (o) {
@@ -234,7 +210,7 @@ int enc_main(int argc, char **argv)
             base64 = 1;
             break;
         case OPT_Z:
-#ifndef OPENSSL_NO_ZLIB
+#ifdef ZLIB
             do_zlib = 1;
 #endif
             break;
@@ -296,7 +272,7 @@ int enc_main(int argc, char **argv)
         case OPT_PBKDF2:
             pbkdf2 = 1;
             if (iter == 0)    /* do not overwrite a chosen value */
-                iter = PBKDF2_ITER_DEFAULT;
+                iter = 10000;
             break;
         case OPT_NONE:
             cipher = NULL;
@@ -313,17 +289,16 @@ int enc_main(int argc, char **argv)
     }
 
     /* No extra arguments. */
-    if (!opt_check_rest_arg(NULL))
+    argc = opt_num_rest();
+    if (argc != 0)
         goto opthelp;
     if (!app_RAND_load())
         goto end;
 
     /* Get the cipher name, either from progname (if set) or flag. */
-    if (!opt_cipher(ciphername, &cipher))
-        goto opthelp;
-    if (cipher && (EVP_CIPHER_mode(cipher) == EVP_CIPH_WRAP_MODE)) {
-        wrap = 1;
-        streamable = 0;
+    if (ciphername != NULL) {
+        if (!opt_cipher(ciphername, &cipher))
+            goto opthelp;
     }
     if (digestname != NULL) {
         if (!opt_md(digestname, &dgst))
@@ -341,30 +316,20 @@ int enc_main(int argc, char **argv)
     if (verbose)
         BIO_printf(bio_err, "bufsize=%d\n", bsize);
 
-#ifndef OPENSSL_NO_ZLIB
-    if (do_zlib)
-        base64 = 0;
+#ifdef ZLIB
+    if (!do_zlib)
 #endif
-    if (do_brotli)
-        base64 = 0;
-    if (do_zstd)
-        base64 = 0;
-
-    if (base64) {
-        if (enc)
-            outformat = FORMAT_BASE64;
-        else
-            informat = FORMAT_BASE64;
-    }
+        if (base64) {
+            if (enc)
+                outformat = FORMAT_BASE64;
+            else
+                informat = FORMAT_BASE64;
+        }
 
     strbuf = app_malloc(SIZE, "strbuf");
     buff = app_malloc(EVP_ENCODE_LENGTH(bsize), "evp buffer");
 
     if (infile == NULL) {
-        if (!streamable && printkey != 2) {  /* if just print key and exit, it's ok */
-            BIO_printf(bio_err, "Unstreamable cipher mode\n");
-            goto end;
-        }
         in = dup_bio_in(informat);
     } else {
         in = bio_open_default(infile, 'r', informat);
@@ -425,8 +390,7 @@ int enc_main(int argc, char **argv)
     rbio = in;
     wbio = out;
 
-#ifndef OPENSSL_NO_COMP
-# ifndef OPENSSL_NO_ZLIB
+#ifdef ZLIB
     if (do_zlib) {
         if ((bzl = BIO_new(BIO_f_zlib())) == NULL)
             goto end;
@@ -438,33 +402,6 @@ int enc_main(int argc, char **argv)
             wbio = BIO_push(bzl, wbio);
         else
             rbio = BIO_push(bzl, rbio);
-    }
-# endif
-
-    if (do_brotli) {
-        if ((bbrot = BIO_new(BIO_f_brotli())) == NULL)
-            goto end;
-        if (debug) {
-            BIO_set_callback_ex(bbrot, BIO_debug_callback_ex);
-            BIO_set_callback_arg(bbrot, (char *)bio_err);
-        }
-        if (enc)
-            wbio = BIO_push(bbrot, wbio);
-        else
-            rbio = BIO_push(bbrot, rbio);
-    }
-
-    if (do_zstd) {
-        if ((bzstd = BIO_new(BIO_f_zstd())) == NULL)
-            goto end;
-        if (debug) {
-            BIO_set_callback_ex(bzstd, BIO_debug_callback_ex);
-            BIO_set_callback_arg(bzstd, (char *)bio_err);
-        }
-        if (enc)
-            wbio = BIO_push(bzstd, wbio);
-        else
-            rbio = BIO_push(bzstd, rbio);
     }
 #endif
 
@@ -589,8 +526,7 @@ int enc_main(int argc, char **argv)
             }
         }
         if ((hiv == NULL) && (str == NULL)
-            && EVP_CIPHER_get_iv_length(cipher) != 0
-            && wrap == 0) {
+            && EVP_CIPHER_get_iv_length(cipher) != 0) {
             /*
              * No IV was explicitly set and no IV was generated.
              * Hence the IV is undefined, making correct decryption impossible.
@@ -617,9 +553,6 @@ int enc_main(int argc, char **argv)
 
         BIO_get_cipher_ctx(benc, &ctx);
 
-        if (wrap == 1)
-            EVP_CIPHER_CTX_set_flags(ctx, EVP_CIPHER_CTX_FLAG_WRAP_ALLOW);
-
         if (!EVP_CipherInit_ex(ctx, cipher, e, NULL, NULL, enc)) {
             BIO_printf(bio_err, "Error setting cipher %s\n",
                        EVP_CIPHER_get0_name(cipher));
@@ -630,8 +563,7 @@ int enc_main(int argc, char **argv)
         if (nopad)
             EVP_CIPHER_CTX_set_padding(ctx, 0);
 
-        if (!EVP_CipherInit_ex(ctx, NULL, NULL, key,
-                               (hiv == NULL && wrap == 1 ? NULL : iv), enc)) {
+        if (!EVP_CipherInit_ex(ctx, NULL, NULL, key, iv, enc)) {
             BIO_printf(bio_err, "Error setting cipher %s\n",
                        EVP_CIPHER_get0_name(cipher));
             ERR_print_errors(bio_err);
@@ -677,16 +609,10 @@ int enc_main(int argc, char **argv)
         inl = BIO_read(rbio, (char *)buff, bsize);
         if (inl <= 0)
             break;
-        if (!streamable && !BIO_eof(rbio)) {    /* do not output data */
-            BIO_printf(bio_err, "Unstreamable cipher mode\n");
-            goto end;
-        }
         if (BIO_write(wbio, (char *)buff, inl) != inl) {
             BIO_printf(bio_err, "error writing output file\n");
             goto end;
         }
-        if (!streamable)
-            break;
     }
     if (!BIO_flush(wbio)) {
         BIO_printf(bio_err, "bad decrypt\n");
@@ -708,11 +634,9 @@ int enc_main(int argc, char **argv)
     BIO_free(b64);
     EVP_MD_free(dgst);
     EVP_CIPHER_free(cipher);
-#ifndef OPENSSL_NO_ZLIB
+#ifdef ZLIB
     BIO_free(bzl);
 #endif
-    BIO_free(bbrot);
-    BIO_free(bzstd);
     release_engine(e);
     OPENSSL_free(pass);
     return ret;

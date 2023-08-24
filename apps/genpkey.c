@@ -1,5 +1,5 @@
 /*
- * Copyright 2006-2022 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2006-2021 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -15,15 +15,17 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 
-static int verbose = 1;
+static int quiet;
 
 static int init_keygen_file(EVP_PKEY_CTX **pctx, const char *file, ENGINE *e,
                             OSSL_LIB_CTX *libctx, const char *propq);
+static int genpkey_cb(EVP_PKEY_CTX *ctx);
+
 typedef enum OPTION_choice {
     OPT_COMMON,
     OPT_ENGINE, OPT_OUTFORM, OPT_OUT, OPT_PASS, OPT_PARAMFILE,
     OPT_ALGORITHM, OPT_PKEYOPT, OPT_GENPARAM, OPT_TEXT, OPT_CIPHER,
-    OPT_VERBOSE, OPT_QUIET, OPT_CONFIG,
+    OPT_QUIET, OPT_CONFIG,
     OPT_PROV_ENUM
 } OPTION_CHOICE;
 
@@ -35,7 +37,6 @@ const OPTIONS genpkey_options[] = {
 #endif
     {"paramfile", OPT_PARAMFILE, '<', "Parameters file"},
     {"algorithm", OPT_ALGORITHM, 's', "The public key algorithm"},
-    {"verbose", OPT_VERBOSE, '-', "Output status while generating keys"},
     {"quiet", OPT_QUIET, '-', "Do not output status while generating keys"},
     {"pkeyopt", OPT_PKEYOPT, 's',
      "Set the public key algorithm option as opt:value"},
@@ -57,50 +58,6 @@ const OPTIONS genpkey_options[] = {
     {NULL}
 };
 
-static const char *param_datatype_2name(unsigned int type, int *ishex)
-{
-    *ishex = 0;
-
-    switch (type) {
-    case OSSL_PARAM_INTEGER: return "int";
-    case OSSL_PARAM_UNSIGNED_INTEGER: return "uint";
-    case OSSL_PARAM_REAL: return "float";
-    case OSSL_PARAM_OCTET_STRING: *ishex = 1; return "string";
-    case OSSL_PARAM_UTF8_STRING: return "string";
-    default:
-        return NULL;
-    }
-}
-
-static void show_gen_pkeyopt(const char *algname, OSSL_LIB_CTX *libctx, const char *propq)
-{
-    EVP_PKEY_CTX *ctx = NULL;
-    const OSSL_PARAM *params;
-    int i, ishex = 0;
-
-    if (algname == NULL)
-        return;
-    ctx = EVP_PKEY_CTX_new_from_name(libctx, algname, propq);
-    if (ctx == NULL)
-        return;
-
-    if (EVP_PKEY_keygen_init(ctx) <= 0)
-        goto cleanup;
-    params = EVP_PKEY_CTX_settable_params(ctx);
-    if (params == NULL)
-        goto cleanup;
-
-    BIO_printf(bio_err, "\nThe possible -pkeyopt arguments are:\n");
-    for (i = 0; params[i].key != NULL; ++i) {
-        const char *name = param_datatype_2name(params[i].data_type, &ishex);
-
-        if (name != NULL)
-            BIO_printf(bio_err, "    %s%s:%s\n", ishex ? "hex" : "", params[i].key, name);
-    }
-cleanup:
-    EVP_PKEY_CTX_free(ctx);
-}
-
 int genpkey_main(int argc, char **argv)
 {
     CONF *conf = NULL;
@@ -117,7 +74,6 @@ int genpkey_main(int argc, char **argv)
     OSSL_LIB_CTX *libctx = app_get0_libctx();
     STACK_OF(OPENSSL_STRING) *keyopt = NULL;
 
-    opt_set_unknown_name("cipher");
     prog = opt_init(argc, argv, genpkey_options);
     keyopt = sk_OPENSSL_STRING_new_null();
     if (keyopt == NULL)
@@ -132,7 +88,6 @@ int genpkey_main(int argc, char **argv)
         case OPT_HELP:
             ret = 0;
             opt_help(genpkey_options);
-            show_gen_pkeyopt(algname, libctx, app_get0_propq());
             goto end;
         case OPT_OUTFORM:
             if (!opt_format(opt_arg(), OPT_FMT_PEMDER, &outformat))
@@ -160,10 +115,7 @@ int genpkey_main(int argc, char **argv)
                 goto end;
             break;
         case OPT_QUIET:
-            verbose = 0;
-            break;
-        case OPT_VERBOSE:
-            verbose = 1;
+            quiet = 1;
             break;
         case OPT_GENPARAM:
             do_param = 1;
@@ -187,7 +139,8 @@ int genpkey_main(int argc, char **argv)
     }
 
     /* No extra arguments. */
-    if (!opt_check_rest_arg(NULL))
+    argc = opt_num_rest();
+    if (argc != 0)
         goto opthelp;
 
     /* Fetch cipher, etc. */
@@ -210,12 +163,9 @@ int genpkey_main(int argc, char **argv)
             goto end;
         }
     }
-    if (!opt_cipher(ciphername, &cipher))
-        goto opthelp;
-    if (ciphername != NULL && do_param == 1) {
-        BIO_printf(bio_err, "Cannot use cipher with -genparam option\n");
-        goto opthelp;
-    }
+    if (ciphername != NULL)
+        if (!opt_cipher(ciphername, &cipher) || do_param == 1)
+            goto opthelp;
 
     private = do_param ? 0 : 1;
 
@@ -228,8 +178,7 @@ int genpkey_main(int argc, char **argv)
     if (out == NULL)
         goto end;
 
-    if (verbose)
-        EVP_PKEY_CTX_set_cb(ctx, progress_cb);
+    EVP_PKEY_CTX_set_cb(ctx, genpkey_cb);
     EVP_PKEY_CTX_set_app_data(ctx, bio_err);
 
     pkey = do_param ? app_paramgen(ctx, algname)
@@ -367,3 +316,27 @@ int init_gen_str(EVP_PKEY_CTX **pctx,
 
 }
 
+static int genpkey_cb(EVP_PKEY_CTX *ctx)
+{
+    char c = '*';
+    BIO *b = EVP_PKEY_CTX_get_app_data(ctx);
+
+    if (quiet)
+        return 1;
+
+    switch (EVP_PKEY_CTX_get_keygen_info(ctx, 0)) {
+    case 0:
+        c = '.';
+        break;
+    case 1:
+        c = '+';
+        break;
+    case 3:
+        c = '\n';
+        break;
+    }
+
+    BIO_write(b, &c, 1);
+    (void)BIO_flush(b);
+    return 1;
+}
