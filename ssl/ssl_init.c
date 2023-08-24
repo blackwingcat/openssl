@@ -23,6 +23,10 @@ static void ssl_library_stop(void);
 
 static CRYPTO_ONCE ssl_base = CRYPTO_ONCE_STATIC_INIT;
 static int ssl_base_inited = 0;
+int SSL_library_init(void)
+{
+	return OPENSSL_init_ssl(0, NULL);
+}
 DEFINE_RUN_ONCE_STATIC(ossl_init_ssl_base)
 {
 #ifndef OPENSSL_NO_COMP
@@ -35,7 +39,7 @@ DEFINE_RUN_ONCE_STATIC(ossl_init_ssl_base)
     SSL_COMP_get_compression_methods();
 #endif
     ssl_sort_cipher_list();
-    OSSL_TRACE(INIT, "ossl_init_ssl_base: SSL_add_ssl_module()\n");
+    OSSL_TRACE(INIT,"ossl_init_ssl_base: SSL_add_ssl_module()\n");
     /*
      * We ignore an error return here. Not much we can do - but not that bad
      * either. We can still safely continue.
